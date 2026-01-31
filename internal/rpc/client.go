@@ -1,7 +1,6 @@
 // Copyright 2025 Erst Users
 // SPDX-License-Identifier: Apache-2.0
 
-
 package rpc
 
 import (
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/dotandev/hintents/internal/logger"
-
 
 	"github.com/dotandev/hintents/internal/telemetry"
 	"github.com/stellar/go/clients/horizonclient"
@@ -97,23 +95,16 @@ var (
 // Client handles interactions with the Stellar Network
 type Client struct {
 	Horizon      horizonclient.ClientInterface
+	HorizonURL   string
+	AltURLs      []string
+	currIndex    int
+	mu           sync.RWMutex
 	Network      Network
 	SorobanURL   string
 	token        string // stored for reference, not logged
 	Config       NetworkConfig
 	CacheEnabled bool
-	HorizonURL string
-	Horizon    horizonclient.ClientInterface
-	Network    Network
-	SorobanURL string
-	AltURLs    []string
-	mu         sync.RWMutex
-	currIndex  int
-	token      string // stored for reference, not logged
-	Config     NetworkConfig
 }
-
-
 
 // NewClient creates a new RPC client with the specified network
 // If network is empty, defaults to Mainnet
@@ -170,25 +161,18 @@ func NewClientWithURLs(urls []string, net Network, token string) *Client {
 	httpClient := createHTTPClient(token)
 
 	return &Client{
-		Horizon:      horizonClient,
+		Horizon: &horizonclient.Client{
+			HorizonURL: urls[0],
+			HTTP:       httpClient,
+		},
+		HorizonURL:   urls[0],
+		AltURLs:      urls,
 		Network:      net,
 		SorobanURL:   sorobanURL,
 		token:        token,
 		Config:       config,
 		CacheEnabled: true,
-	c := &Client{
-		HorizonURL: urls[0],
-		Horizon: &horizonclient.Client{
-			HorizonURL: urls[0],
-			HTTP:       httpClient,
-		},
-		Network:    net,
-		SorobanURL: sorobanURL,
-		AltURLs:    urls,
-		token:      token,
-		Config:     config,
 	}
-	return c
 }
 
 // rotateURL switches to the next available provider URL
@@ -207,13 +191,6 @@ func (c *Client) rotateURL() bool {
 		HTTP:       createHTTPClient(c.token),
 	}
 
-	return &Client{
-		Horizon:      horizonClient,
-		Network:      net,
-		SorobanURL:   defaultClient.SorobanURL,
-		token:        token,
-		CacheEnabled: true,
-	}
 	logger.Logger.Warn("RPC failover triggered", "new_url", c.HorizonURL)
 	return true
 }
@@ -229,8 +206,6 @@ func createHTTPClient(token string) *http.Client {
 			token:     token,
 			transport: http.DefaultTransport,
 		},
-
-
 	}
 }
 
@@ -298,6 +273,7 @@ func (c *Client) getTransactionAttempt(ctx context.Context, hash string) (*Trans
 	tx, err := c.Horizon.TransactionDetail(hash)
 	if err != nil {
 		span.RecordError(err)
+		logger.Logger.Error("Failed to fetch transaction", "hash", hash, "error", err, "url", c.HorizonURL)
 		return nil, fmt.Errorf("failed to fetch transaction from %s: %w", c.HorizonURL, err)
 	}
 
@@ -307,10 +283,9 @@ func (c *Client) getTransactionAttempt(ctx context.Context, hash string) (*Trans
 		attribute.Int("result_meta.size_bytes", len(tx.ResultMetaXdr)),
 	)
 
-	logger.Logger.Info("Transaction fetched successfully", "hash", hash, "envelope_size", len(tx.EnvelopeXdr), "url", c.HorizonURL)
+	logger.Logger.Info("Transaction fetched", "hash", hash, "envelope_size", len(tx.EnvelopeXdr), "url", c.HorizonURL)
 
 	return ParseTransactionResponse(tx), nil
-
 
 }
 
@@ -536,7 +511,7 @@ func (c *Client) GetLedgerEntries(ctx context.Context, keys []string) (map[strin
 
 	logger.Logger.Debug("Fetching ledger entries from RPC", "count", len(keysToFetch), "url", c.SorobanURL)
 	for attempt := 0; attempt < len(c.AltURLs); attempt++ {
-		entries, err := c.getLedgerEntriesAttempt(ctx, keys)
+		entries, err := c.getLedgerEntriesAttempt(ctx, keysToFetch)
 		if err == nil {
 			return entries, nil
 		}
@@ -553,9 +528,8 @@ func (c *Client) GetLedgerEntries(ctx context.Context, keys []string) (map[strin
 	return nil, fmt.Errorf("all Soroban RPC endpoints failed")
 }
 
-func (c *Client) getLedgerEntriesAttempt(ctx context.Context, keys []string) (map[string]string, error) {
-	logger.Logger.Debug("Fetching ledger entries", "count", len(keys), "url", c.HorizonURL)
-
+func (c *Client) getLedgerEntriesAttempt(ctx context.Context, keysToFetch []string) (map[string]string, error) {
+	logger.Logger.Debug("Fetching ledger entries", "count", len(keysToFetch), "url", c.HorizonURL)
 	reqBody := GetLedgerEntriesRequest{
 		Jsonrpc: "2.0",
 		ID:      1,
@@ -568,10 +542,6 @@ func (c *Client) getLedgerEntriesAttempt(ctx context.Context, keys []string) (ma
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Note: We use the current HorizonURL for Soroban RPC as well if provided via flag,
-	// or fallback to default if not. In this implementation, HorizonURL and SorobanRPC
-	// are assumed to be handled by the same endpoint or derived from it for simplicity
-	// in the fallback rotation.
 	targetURL := c.HorizonURL
 	if c.Network == Testnet && targetURL == "" {
 		targetURL = TestnetSorobanURL
@@ -605,6 +575,7 @@ func (c *Client) getLedgerEntriesAttempt(ctx context.Context, keys []string) (ma
 		return nil, fmt.Errorf("rpc error from %s: %s (code %d)", targetURL, rpcResp.Error.Message, rpcResp.Error.Code)
 	}
 
+	entries := make(map[string]string)
 	fetchedCount := 0
 	for _, entry := range rpcResp.Result.Entries {
 		entries[entry.Key] = entry.Xdr
@@ -619,11 +590,11 @@ func (c *Client) getLedgerEntriesAttempt(ctx context.Context, keys []string) (ma
 	}
 
 	logger.Logger.Info("Ledger entries fetched",
-		"total_requested", len(keys),
-		"from_cache", len(keys)-len(keysToFetch),
+		"total_requested", len(keysToFetch),
+		"from_cache", len(keysToFetch)-fetchedCount,
 		"from_rpc", fetchedCount,
+		"url", targetURL,
 	)
-	logger.Logger.Info("Ledger entries fetched successfully", "found", len(entries), "requested", len(keys), "url", targetURL)
 
 	return entries, nil
 }
