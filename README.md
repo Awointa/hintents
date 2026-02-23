@@ -149,6 +149,33 @@ We are building this open-source to help the entire Stellar community.
     go test ./...
     ```
 
+## Development
+
+### Code Quality & Linting
+
+This project enforces strict linting rules to maintain code quality. See [docs/STRICT_LINTING.md](docs/STRICT_LINTING.md) for details.
+
+Quick commands:
+
+```bash
+# Run all strict linting (Go + Rust)
+make lint-all-strict
+
+# Go linting only
+make lint-strict
+
+# Rust linting only
+make rust-lint-strict
+
+# Install pre-commit hooks
+pip install pre-commit && pre-commit install
+```
+
+The CI pipeline fails immediately on:
+- Unused variables, imports, or functions
+- Dead code
+- Any linting warnings
+
 ### Development Roadmap
 
 See [docs/proposal.md](docs/proposal.md) for the detailed proposal.
