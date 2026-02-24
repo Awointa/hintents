@@ -87,6 +87,8 @@ func (v *InteractiveViewer) handleCommand(command string) bool {
 		}
 	case "i", "info":
 		v.showNavigationInfo()
+	case "sp", "split":
+		v.showSplitPane()
 	case "l", "list":
 		if len(parts) > 1 {
 			v.listSteps(parts[1])
@@ -291,6 +293,36 @@ func (v *InteractiveViewer) listSteps(countStr string) {
 	}
 }
 
+// showSplitPane renders the horizontal split-pane view for the current step.
+func (v *InteractiveViewer) showSplitPane() {
+	state, err := v.trace.GetCurrentState()
+	if err != nil {
+		fmt.Printf("%s %s\n", visualizer.Error(), err)
+		return
+	}
+	node := executionStateToNode(state)
+	var src *SourceContext
+	if node.SourceRef != nil {
+		src, _ = LoadSourceContext(*node.SourceRef, defaultRadius)
+	}
+	pane := DefaultSplitPane()
+	pane.Render(os.Stdout, node, src)
+}
+
+// executionStateToNode derives a TraceNode from an ExecutionState for display
+// in the split pane. The SourceRef field is populated when the state carries
+// enough information to identify a source location.
+func executionStateToNode(state *ExecutionState) *TraceNode {
+	node := NewTraceNode(fmt.Sprintf("step-%d", state.Step), state.Operation)
+	node.ContractID = state.ContractID
+	node.Function = state.Function
+	if state.Error != "" {
+		node.Error = state.Error
+		node.Type = "error"
+	}
+	return node
+}
+
 // showHelp displays available commands
 func (v *InteractiveViewer) showHelp() {
 	fmt.Printf("\n%s Available Commands\n", visualizer.Symbol("book"))
@@ -305,6 +337,7 @@ func (v *InteractiveViewer) showHelp() {
 	fmt.Println("  r, reconstruct [step] - Reconstruct state")
 	fmt.Println("  l, list [count]      - List steps (default: 10)")
 	fmt.Println("  i, info              - Show navigation info")
+	fmt.Println("  sp, split            - Split-pane trace and source view")
 	fmt.Println()
 	fmt.Println("Other:")
 	fmt.Println("  h, help              - Show this help")
