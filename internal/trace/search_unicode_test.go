@@ -109,7 +109,7 @@ func TestSearchUnicode_Mixed(t *testing.T) {
 		{
 			ID:        "1",
 			Function:  "transfer_资金",
-			EventData: "Événement créé ",
+			EventData: "Événement créé 🚀", 
 		},
 	}
 
@@ -124,10 +124,11 @@ func TestSearchUnicode_Mixed(t *testing.T) {
 	assert.Equal(t, 1, len(matches))
 
 	// Search for emoji
-	engine.SetQuery("")
+	engine.SetQuery("🚀") 
 	matches = engine.Search(nodes)
 	assert.Equal(t, 1, len(matches))
-}
+}	assert.Equal(t, 1, len(matches))
+
 
 func TestSearchSpecialChars_Dollar(t *testing.T) {
 	engine := NewSearchEngine()
