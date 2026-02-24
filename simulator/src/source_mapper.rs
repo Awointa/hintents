@@ -31,6 +31,7 @@ impl SourceMapper {
         }
     }
 
+    #[allow(dead_code)]
     pub fn map_wasm_offset_to_source(&self, _wasm_offset: u64) -> Option<SourceLocation> {
         if !self.has_symbols {
             return None;

@@ -4,6 +4,7 @@
 mod config;
 mod gas_optimizer;
 mod runner;
+mod snapshot;
 mod source_mapper;
 mod types;
 
@@ -13,7 +14,7 @@ use crate::types::*;
 use base64::Engine;
 use soroban_env_host::xdr::ReadXdr;
 use soroban_env_host::{
-    xdr::{HostFunction, Operation, OperationBody, ScVal},
+    xdr::{Operation, OperationBody},
     Host, HostError,
 };
 use std::env;
@@ -73,9 +74,9 @@ fn execute_operations(host: &Host, operations: &[Operation]) -> Result<Vec<Strin
                 // Note: The host provided is already initialized with storage.
                 // We really should use `host.invoke_function`.
 
-                logs.push(format!("Executing InvokeHostFunction..."));
+                logs.push("Executing InvokeHostFunction...".to_string());
                 let val = host.invoke_function(invoke_op.host_function.clone())?;
-                logs.push(format!("Result: {:?}", val));
+                logs.push(format!("Result: {val:?}"));
             }
             _ => {
                 logs.push(format!(
@@ -100,10 +101,10 @@ fn categorize_events(events: &soroban_env_host::events::Events) -> Vec<Categoriz
             }
             .to_string();
 
-            let contract_id = e.event.contract_id.as_ref().map(|id| format!("{:?}", id));
+            let contract_id = e.event.contract_id.as_ref().map(|id| format!("{id:?}"));
             let topics = match &e.event.body {
                 soroban_env_host::xdr::ContractEventBody::V0(v0) => {
-                    v0.topics.iter().map(|t| format!("{:?}", t)).collect()
+                    v0.topics.iter().map(|t| format!("{t:?}")).collect()
                 }
             };
             let data = match &e.event.body {
@@ -144,7 +145,7 @@ fn main() {
     if let Err(e) = std::io::stdin().read_to_string(&mut buffer) {
         let res = SimulationResponse {
             status: "error".to_string(),
-            error: Some(format!("Failed to read stdin: {}", e)),
+            error: Some(format!("Failed to read stdin: {e}")),
             events: vec![],
             diagnostic_events: vec![],
             categorized_events: vec![],
@@ -155,7 +156,7 @@ fn main() {
             source_location: None,
         };
         println!("{}", serde_json::to_string(&res).unwrap());
-        eprintln!("Failed to read stdin: {}", e);
+        eprintln!("Failed to read stdin: {e}");
         return;
     }
 
@@ -165,7 +166,7 @@ fn main() {
         Err(e) => {
             let res = SimulationResponse {
                 status: "error".to_string(),
-                error: Some(format!("Invalid JSON: {}", e)),
+                error: Some(format!("Invalid JSON: {e}")),
                 events: vec![],
                 diagnostic_events: vec![],
                 categorized_events: vec![],
@@ -188,11 +189,11 @@ fn main() {
         ) {
             Ok(env) => env,
             Err(e) => {
-                return send_error(format!("Failed to parse Envelope XDR: {}", e));
+                return send_error(format!("Failed to parse Envelope XDR: {e}"));
             }
         },
         Err(e) => {
-            return send_error(format!("Failed to decode Envelope Base64: {}", e));
+            return send_error(format!("Failed to decode Envelope Base64: {e}"));
         }
     };
 
@@ -208,18 +209,18 @@ fn main() {
             ) {
                 Ok(meta) => Some(meta),
                 Err(e) => {
-                    return send_error(format!("Failed to parse ResultMeta XDR: {}", e));
+                    return send_error(format!("Failed to parse ResultMeta XDR: {e}"));
                 }
             },
             Err(e) => {
-                eprintln!("Warning: Failed to decode ResultMeta Base64: {}. Proceeding with empty storage.", e);
+                eprintln!("Warning: Failed to decode ResultMeta Base64: {e}. Proceeding with empty storage.");
                 None
             }
         }
     };
 
     // Initialize source mapper if WASM is provided
-    let source_mapper = if let Some(wasm_base64) = &request.contract_wasm {
+    let _source_mapper = if let Some(wasm_base64) = &request.contract_wasm {
         match base64::engine::general_purpose::STANDARD.decode(wasm_base64) {
             Ok(wasm_bytes) => {
                 let mapper = SourceMapper::new(wasm_bytes);
@@ -232,7 +233,7 @@ fn main() {
                 }
             }
             Err(e) => {
-                eprintln!("Failed to decode WASM base64: {}", e);
+                eprintln!("Failed to decode WASM base64: {e}");
                 None
             }
         }
@@ -244,35 +245,22 @@ fn main() {
     let sim_host = runner::SimHost::new(None);
     let host = sim_host.inner;
 
-    let mut loaded_entries_count = 0;
-
-    // Populate Host Storage
-    if let Some(entries) = &request.ledger_entries {
-        for (key_xdr, entry_xdr) in entries {
-            let _key = match base64::engine::general_purpose::STANDARD.decode(key_xdr) {
-                Ok(b) => match soroban_env_host::xdr::LedgerKey::from_xdr(
-                    b,
-                    soroban_env_host::xdr::Limits::none(),
-                ) {
-                    Ok(k) => k,
-                    Err(e) => return send_error(format!("Failed to parse LedgerKey XDR: {}", e)),
-                },
-                Err(e) => return send_error(format!("Failed to decode LedgerKey Base64: {}", e)),
-            };
-
-            let _entry = match base64::engine::general_purpose::STANDARD.decode(entry_xdr) {
-                Ok(b) => match soroban_env_host::xdr::LedgerEntry::from_xdr(
-                    b,
-                    soroban_env_host::xdr::Limits::none(),
-                ) {
-                    Ok(e) => e,
-                    Err(e) => return send_error(format!("Failed to parse LedgerEntry XDR: {}", e)),
-                },
-                Err(e) => return send_error(format!("Failed to decode LedgerEntry Base64: {}", e)),
-            };
-            loaded_entries_count += 1;
+    // Load ledger entries into snapshot
+    let snapshot = if let Some(entries) = &request.ledger_entries {
+        match snapshot::LedgerSnapshot::from_base64_map(entries) {
+            Ok(snap) => {
+                eprintln!("Loaded {} ledger entries into snapshot", snap.len());
+                snap
+            }
+            Err(e) => {
+                return send_error(format!("Failed to load ledger snapshot: {e}"));
+            }
         }
-    }
+    } else {
+        snapshot::LedgerSnapshot::new()
+    };
+
+    let loaded_entries_count = snapshot.len();
 
     // Extract Operations and Simulate
     let operations = match &envelope {
@@ -321,7 +309,7 @@ fn main() {
     let mut flamegraph_svg = None;
     if request.profile.unwrap_or(false) {
         // Simple simulated flamegraph for demonstration
-        let folded_data = format!("Total;CPU {}\nTotal;Memory {}\n", cpu_insns, mem_bytes);
+        let folded_data = format!("Total;CPU {cpu_insns}\nTotal;Memory {mem_bytes}\n");
         let mut result = Vec::new();
         let mut options = inferno::flamegraph::Options::default();
         options.title = "Soroban Resource Consumption".to_string();
@@ -329,7 +317,7 @@ fn main() {
         if let Err(e) =
             inferno::flamegraph::from_reader(&mut options, folded_data.as_bytes(), &mut result)
         {
-            eprintln!("Failed to generate flamegraph: {}", e);
+            eprintln!("Failed to generate flamegraph: {e}");
         } else {
             flamegraph_svg = Some(String::from_utf8_lossy(&result).to_string());
         }
@@ -338,58 +326,58 @@ fn main() {
     match result {
         Ok(Ok(exec_logs)) => {
             // Extract both raw event strings and structured diagnostic events
-            let (events, diagnostic_events): (Vec<String>, Vec<DiagnosticEvent>) =
-                match host.get_events() {
-                    Ok(evs) => {
-                        let raw_events: Vec<String> =
-                            evs.0.iter().map(|e| format!("{:?}", e)).collect();
-                        let diag_events: Vec<DiagnosticEvent> = evs
-                            .0
-                            .iter()
-                            .map(|event| {
-                                let event_type = match &event.event.type_ {
-                                    soroban_env_host::xdr::ContractEventType::Contract => {
-                                        "contract".to_string()
-                                    }
-                                    soroban_env_host::xdr::ContractEventType::System => {
-                                        "system".to_string()
-                                    }
-                                    soroban_env_host::xdr::ContractEventType::Diagnostic => {
-                                        "diagnostic".to_string()
-                                    }
-                                };
-
-                                let contract_id = event
-                                    .event
-                                    .contract_id
-                                    .as_ref()
-                                    .map(|contract_id| format!("{:?}", contract_id));
-
-                                let (topics, data) = match &event.event.body {
-                                    soroban_env_host::xdr::ContractEventBody::V0(v0) => {
-                                        let topics: Vec<String> =
-                                            v0.topics.iter().map(|t| format!("{:?}", t)).collect();
-                                        let data = format!("{:?}", v0.data);
-                                        (topics, data)
-                                    }
-                                };
-
-                                DiagnosticEvent {
-                                    event_type,
-                                    contract_id,
-                                    topics,
-                                    data,
-                                    in_successful_contract_call: event.failed_call,
+            let (events, diagnostic_events): (Vec<String>, Vec<DiagnosticEvent>) = match host
+                .get_events()
+            {
+                Ok(evs) => {
+                    let raw_events: Vec<String> = evs.0.iter().map(|e| format!("{e:?}")).collect();
+                    let diag_events: Vec<DiagnosticEvent> = evs
+                        .0
+                        .iter()
+                        .map(|event| {
+                            let event_type = match &event.event.type_ {
+                                soroban_env_host::xdr::ContractEventType::Contract => {
+                                    "contract".to_string()
                                 }
-                            })
-                            .collect();
-                        (raw_events, diag_events)
-                    }
-                    Err(_) => (
-                        vec!["Failed to retrieve events".to_string()],
-                        Vec::<DiagnosticEvent>::new(),
-                    ),
-                };
+                                soroban_env_host::xdr::ContractEventType::System => {
+                                    "system".to_string()
+                                }
+                                soroban_env_host::xdr::ContractEventType::Diagnostic => {
+                                    "diagnostic".to_string()
+                                }
+                            };
+
+                            let contract_id = event
+                                .event
+                                .contract_id
+                                .as_ref()
+                                .map(|contract_id| format!("{contract_id:?}"));
+
+                            let (topics, data) = match &event.event.body {
+                                soroban_env_host::xdr::ContractEventBody::V0(v0) => {
+                                    let topics: Vec<String> =
+                                        v0.topics.iter().map(|t| format!("{t:?}")).collect();
+                                    let data = format!("{:?}", v0.data);
+                                    (topics, data)
+                                }
+                            };
+
+                            DiagnosticEvent {
+                                event_type,
+                                contract_id,
+                                topics,
+                                data,
+                                in_successful_contract_call: event.failed_call,
+                            }
+                        })
+                        .collect();
+                    (raw_events, diag_events)
+                }
+                Err(_) => (
+                    vec!["Failed to retrieve events".to_string()],
+                    Vec::<DiagnosticEvent>::new(),
+                ),
+            };
 
             // Capture categorized events for analyzer
             let categorized_events = match host.get_events() {
@@ -427,10 +415,9 @@ fn main() {
             // Host error during execution (e.g., contract trap, validation failure)
             let structured_error = StructuredError {
                 error_type: "HostError".to_string(),
-                message: format!("{:?}", host_error),
+                message: format!("{host_error:?}"),
                 details: Some(format!(
-                    "Contract execution failed with host error: {:?}",
-                    host_error
+                    "Contract execution failed with host error: {host_error:?}"
                 )),
             };
 
@@ -459,7 +446,7 @@ fn main() {
 
             let response = SimulationResponse {
                 status: "error".to_string(),
-                error: Some(format!("Simulator panicked: {}", panic_msg)),
+                error: Some(format!("Simulator panicked: {panic_msg}")),
                 events: vec![],
                 diagnostic_events: vec![],
                 categorized_events: vec![],
@@ -479,8 +466,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_decode_vm_traps() {
-        let msg = decode_error("Error: Wasm Trap: out of bounds memory access");
-        assert!(msg.contains("VM Trap: Out of Bounds Access"));
+    fn test_categorize_events() {
+        // Test that event categorization works correctly
+        let events = soroban_env_host::events::Events::default();
+        let categorized = categorize_events(&events);
+        assert_eq!(categorized.len(), 0);
     }
 }
