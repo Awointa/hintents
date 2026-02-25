@@ -231,7 +231,7 @@ func (c *Client) rotateURL() bool {
 	c.HorizonURL = c.AltURLs[c.currIndex]
 	httpClient := c.httpClient
 	if httpClient == nil {
-		httpClient = createHTTPClient(c.token)
+		httpClient = createHTTPClient(c.token, defaultHTTPTimeout)
 	}
 	c.Horizon = &horizonclient.Client{
 		HorizonURL: c.HorizonURL,
@@ -249,8 +249,8 @@ func (c *Client) getHTTPClient() *http.Client {
 	return http.DefaultClient
 }
 
-// createHTTPClient creates an HTTP client with optional authentication
-func createHTTPClient(token string) *http.Client {
+// createHTTPClient creates an HTTP client with optional authentication and a configurable timeout.
+func createHTTPClient(token string, timeout time.Duration) *http.Client {
 	cfg := DefaultRetryConfig()
 
 	var baseTransport http.RoundTripper = http.DefaultTransport
@@ -267,6 +267,7 @@ func createHTTPClient(token string) *http.Client {
 
 	return &http.Client{
 		Transport: transport,
+		Timeout:   timeout,
 	}
 }
 
@@ -277,7 +278,7 @@ func NewCustomClient(config NetworkConfig) (*Client, error) {
 		return nil, err
 	}
 
-	httpClient := createHTTPClient("")
+	httpClient := createHTTPClient("", defaultHTTPTimeout)
 	horizonClient := &horizonclient.Client{
 		HorizonURL: config.HorizonURL,
 		HTTP:       httpClient,
