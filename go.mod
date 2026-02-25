@@ -3,6 +3,7 @@ module github.com/dotandev/hintents
 go 1.24.0
 
 require (
+	github.com/atotto/clipboard v0.1.4
 	github.com/getsentry/sentry-go v0.31.1
 	github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e
 	github.com/gorilla/rpc v1.2.1
@@ -15,7 +16,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.28.0
 	go.opentelemetry.io/otel/sdk v1.37.0
 	go.opentelemetry.io/otel/trace v1.37.0
-	modernc.org/sqlite v1.44.3
+	modernc.org/sqlite v1.46.1
 )
 
 require (
