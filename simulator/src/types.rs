@@ -21,6 +21,8 @@ pub struct SimulationRequest {
     /// (e.g. time-locked contract logic); not yet consumed by the simulator.
     #[allow(dead_code)]
     pub timestamp: String,
+    pub mock_base_fee: Option<u32>,
+    pub mock_gas_price: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

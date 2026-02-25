@@ -93,30 +93,43 @@ fn execute_operations(host: &Host, operations: &[Operation]) -> Result<Vec<Strin
     Ok(logs)
 }
 
-fn decode_error(msg: &str) -> String {
-    if msg.contains("out of bounds memory access") {
-        "VM Trap: Out of Bounds Access".to_string()
-    } else if msg.contains("unreachable") {
-        "VM Trap: Unreachable Instruction".to_string()
-    } else if msg.contains("integer divide by zero") {
-        "VM Trap: Division by Zero".to_string()
-    } else if msg.contains("stack overflow") {
-        "VM Trap: Stack Overflow".to_string()
-    } else {
-        msg.to_string()
+fn transaction_fee_stroops(envelope: &soroban_env_host::xdr::TransactionEnvelope) -> u64 {
+    match envelope {
+        soroban_env_host::xdr::TransactionEnvelope::Tx(tx_v1) => tx_v1.tx.fee as u64,
+        soroban_env_host::xdr::TransactionEnvelope::TxV0(tx_v0) => tx_v0.tx.fee as u64,
+        soroban_env_host::xdr::TransactionEnvelope::TxFeeBump(bump) => bump.tx.fee as u64,
     }
 }
 
-fn extract_wasm_instruction(topics: &[String], data: &str) -> Option<String> {
-    if topics.iter().any(|t| t.contains("budget")) {
-        if let Some(pos) = data.find(':') {
-            let instr = data[pos + 1..].trim().trim_matches('"').trim_matches(')');
-            if !instr.is_empty() {
-                return Some(instr.to_string());
-            }
-        }
+fn mocked_required_fee_stroops(
+    request: &SimulationRequest,
+    operations_count: usize,
+    cpu_insns: u64,
+    mem_bytes: u64,
+) -> Option<u64> {
+    let mut required_fee = 0u64;
+    let mut enabled = false;
+
+    if let Some(base_fee) = request.mock_base_fee {
+        enabled = true;
+        required_fee =
+            required_fee.saturating_add((base_fee as u64).saturating_mul(operations_count as u64));
     }
-    None
+
+    if let Some(gas_price) = request.mock_gas_price {
+        enabled = true;
+        // Keep the unit small enough to be predictable in local replay while still driven by observed usage.
+        let cpu_units = cpu_insns.saturating_add(9_999) / 10_000;
+        let mem_units = mem_bytes.saturating_add(1_023) / 1_024;
+        let resource_units = cpu_units.saturating_add(mem_units).max(1);
+        required_fee = required_fee.saturating_add(gas_price.saturating_mul(resource_units));
+    }
+
+    if enabled {
+        Some(required_fee)
+    } else {
+        None
+    }
 }
 
 fn categorize_events(events: &soroban_env_host::events::Events) -> Vec<CategorizedEvent> {
@@ -548,6 +561,40 @@ fn main() {
                 format!("Memory Bytes Used: {}", mem_bytes),
             ];
             final_logs.extend(exec_logs);
+
+            if let Some(required_fee) = mocked_required_fee_stroops(
+                &request,
+                operations.as_slice().len(),
+                cpu_insns,
+                mem_bytes,
+            ) {
+                let declared_fee = transaction_fee_stroops(&envelope);
+                final_logs.push(format!(
+                    "Mock fee check: declared={} required={}",
+                    declared_fee, required_fee
+                ));
+
+                if declared_fee < required_fee {
+                    let response = SimulationResponse {
+                        status: "error".to_string(),
+                        error: Some(format!(
+                            "insufficient fee (mocked): declared {} stroops, required {} stroops",
+                            declared_fee, required_fee
+                        )),
+                        events,
+                        diagnostic_events,
+                        categorized_events,
+                        logs: final_logs,
+                        flamegraph: flamegraph_svg,
+                        optimization_report,
+                        budget_usage: Some(budget_usage),
+                        source_location: None,
+                    };
+
+                    println!("{}", serde_json::to_string(&response).unwrap());
+                    return;
+                }
+            }
 
             let response = SimulationResponse {
                 status: "success".to_string(),
