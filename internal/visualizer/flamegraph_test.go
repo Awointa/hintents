@@ -187,3 +187,82 @@ func TestExportFlamegraph_DefaultFormat(t *testing.T) {
 		t.Error("ExportFlamegraph(invalid) should default to SVG, not HTML")
 	}
 }
+
+// --- Property-based tests ---
+// Feature: html-flamegraph-export
+
+// Property 1: GenerateInteractiveHTML output is self-contained
+// For any non-empty SVG string, the output contains <!DOCTYPE html>, embeds the SVG,
+// and has no external HTTP references.
+// Validates: Requirements 4.1, 4.2, 4.3, 4.4, 4.5
+func TestProperty_GenerateInteractiveHTML_SelfContained(t *testing.T) {
+	svgs := []string{
+		`<svg xmlns="http://www.w3.org/2000/svg"><text>fn1</text></svg>`,
+		`<svg><g><rect fill="red"/><title>main</title></g></svg>`,
+		`<svg width="100" height="50"><circle cx="50" cy="25" r="20"/></svg>`,
+		`<svg><defs><style>.a{fill:blue}</style></defs><rect class="a"/></svg>`,
+	}
+	for _, svg := range svgs {
+		html := GenerateInteractiveHTML(svg)
+		if !strings.Contains(html, "<!DOCTYPE html>") {
+			t.Errorf("Property 1 violated: missing <!DOCTYPE html> for input %q", svg[:min(len(svg), 40)])
+		}
+		if !strings.Contains(html, "<svg") {
+			t.Errorf("Property 1 violated: SVG not embedded for input %q", svg[:min(len(svg), 40)])
+		}
+		if strings.Contains(html, `src="http`) || strings.Contains(html, `href="http`) {
+			t.Errorf("Property 1 violated: external HTTP reference found for input %q", svg[:min(len(svg), 40)])
+		}
+	}
+}
+
+// Property 2: ExportFlamegraph preserves SVG text content for any format
+// Validates: Requirement 4.6
+func TestProperty_ExportFlamegraph_PreservesSVGContent(t *testing.T) {
+	type testCase struct {
+		svg    string
+		format ExportFormat
+		marker string
+	}
+	cases := []testCase{
+		{`<svg><text>unique_fn_abc</text></svg>`, FormatHTML, "unique_fn_abc"},
+		{`<svg><text>unique_fn_abc</text></svg>`, FormatSVG, "unique_fn_abc"},
+		{`<svg><title>my_contract::call</title></svg>`, FormatHTML, "my_contract::call"},
+		{`<svg><title>my_contract::call</title></svg>`, FormatSVG, "my_contract::call"},
+		{`<svg fill="magenta"><rect/></svg>`, FormatHTML, "magenta"},
+		{`<svg fill="magenta"><rect/></svg>`, FormatSVG, "magenta"},
+	}
+	for _, tc := range cases {
+		out := ExportFlamegraph(tc.svg, tc.format)
+		if !strings.Contains(out, tc.marker) {
+			t.Errorf("Property 2 violated: marker %q not found in %s output", tc.marker, tc.format)
+		}
+	}
+}
+
+// Property 3: InjectDarkMode is idempotent
+// Applying it twice must equal applying it once.
+// Validates: Requirement 5.2
+func TestProperty_InjectDarkMode_Idempotent(t *testing.T) {
+	svgs := []string{
+		`<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>`,
+		`<svg><text>hello</text></svg>`,
+		`<svg><style>@media (prefers-color-scheme: dark) {}</style><rect/></svg>`,
+		``,
+		`not an svg`,
+	}
+	for _, svg := range svgs {
+		once := InjectDarkMode(svg)
+		twice := InjectDarkMode(once)
+		if once != twice {
+			t.Errorf("Property 3 violated: InjectDarkMode not idempotent for input %q", svg[:min(len(svg), 40)])
+		}
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

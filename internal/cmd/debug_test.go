@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/dotandev/hintents/internal/simulator"
+	"github.com/dotandev/hintents/internal/visualizer"
 	"github.com/stellar/go-stellar-sdk/xdr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -343,4 +344,113 @@ func TestExtractLedgerKeys(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "Key not found in extracted keys")
+}
+
+// --- Flamegraph export helper tests ---
+
+func TestResolveExportFormat(t *testing.T) {
+	tests := []struct {
+		flag string
+		want visualizer.ExportFormat
+	}{
+		{"html", visualizer.FormatHTML},
+		{"svg", visualizer.FormatSVG},
+		{"unknown", visualizer.FormatHTML}, // defaults to HTML
+		{"", visualizer.FormatHTML},        // empty defaults to HTML
+	}
+	for _, tt := range tests {
+		t.Run(tt.flag, func(t *testing.T) {
+			got := resolveExportFormat(tt.flag)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestExportFlamegraphIfNeeded_NoProfile(t *testing.T) {
+	prev := ProfileFlag
+	t.Cleanup(func() { ProfileFlag = prev })
+	ProfileFlag = false
+
+	dir := t.TempDir()
+	prevDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(prevDir) })
+
+	resp := &simulator.SimulationResponse{Flamegraph: "<svg>test</svg>"}
+	err := exportFlamegraphIfNeeded("abc123", resp)
+	assert.NoError(t, err)
+
+	entries, _ := os.ReadDir(dir)
+	assert.Empty(t, entries, "no file should be written when profiling is disabled")
+}
+
+func TestExportFlamegraphIfNeeded_EmptyFlamegraph(t *testing.T) {
+	prev := ProfileFlag
+	t.Cleanup(func() { ProfileFlag = prev })
+	ProfileFlag = true
+
+	dir := t.TempDir()
+	prevDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(prevDir) })
+
+	resp := &simulator.SimulationResponse{Flamegraph: ""}
+	err := exportFlamegraphIfNeeded("abc123", resp)
+	assert.NoError(t, err)
+
+	entries, _ := os.ReadDir(dir)
+	assert.Empty(t, entries, "no file should be written when flamegraph is empty")
+}
+
+func TestExportFlamegraphIfNeeded_WritesHTMLFile(t *testing.T) {
+	prevProfile := ProfileFlag
+	prevFormat := ProfileFormatFlag
+	t.Cleanup(func() {
+		ProfileFlag = prevProfile
+		ProfileFormatFlag = prevFormat
+	})
+	ProfileFlag = true
+	ProfileFormatFlag = "html"
+
+	dir := t.TempDir()
+	prevDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(prevDir) })
+
+	svgContent := `<svg xmlns="http://www.w3.org/2000/svg"><text>hello</text></svg>`
+	resp := &simulator.SimulationResponse{Flamegraph: svgContent}
+	err := exportFlamegraphIfNeeded("deadbeef", resp)
+	assert.NoError(t, err)
+
+	expectedFile := filepath.Join(dir, "deadbeef.flamegraph.html")
+	data, readErr := os.ReadFile(expectedFile)
+	assert.NoError(t, readErr, "expected HTML file to be written")
+	assert.Contains(t, string(data), "<!DOCTYPE html>")
+	assert.Contains(t, string(data), "hello")
+}
+
+func TestExportFlamegraphIfNeeded_WritesSVGFile(t *testing.T) {
+	prevProfile := ProfileFlag
+	prevFormat := ProfileFormatFlag
+	t.Cleanup(func() {
+		ProfileFlag = prevProfile
+		ProfileFormatFlag = prevFormat
+	})
+	ProfileFlag = true
+	ProfileFormatFlag = "svg"
+
+	dir := t.TempDir()
+	prevDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(prevDir) })
+
+	svgContent := `<svg xmlns="http://www.w3.org/2000/svg"><text>world</text></svg>`
+	resp := &simulator.SimulationResponse{Flamegraph: svgContent}
+	err := exportFlamegraphIfNeeded("cafebabe", resp)
+	assert.NoError(t, err)
+
+	expectedFile := filepath.Join(dir, "cafebabe.flamegraph.svg")
+	data, readErr := os.ReadFile(expectedFile)
+	assert.NoError(t, readErr, "expected SVG file to be written")
+	assert.Contains(t, string(data), "world")
 }

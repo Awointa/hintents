@@ -175,12 +175,19 @@ func (d *DebugCommand) runDebug(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Transaction fetched successfully. Envelope size: %d bytes\n", len(resp.EnvelopeXdr))
 
-	// TODO: Use d.Runner for simulation when ready
-	// simReq := &simulator.SimulationRequest{
-	//     EnvelopeXdr: resp.EnvelopeXdr,
-	//     ResultMetaXdr: resp.ResultMetaXdr,
-	// }
-	// simResp, err := d.Runner.Run(simReq)
+	simReq := &simulator.SimulationRequest{
+		EnvelopeXdr:   resp.EnvelopeXdr,
+		ResultMetaXdr: resp.ResultMetaXdr,
+		Profile:       ProfileFlag,
+	}
+	simResp, err := d.Runner.Run(cmd.Context(), simReq)
+	if err != nil {
+		return fmt.Errorf("simulation failed: %w", err)
+	}
+
+	if err := exportFlamegraphIfNeeded(txHash, simResp); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -1203,6 +1210,42 @@ func findDeprecatedHostFunction(input string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// resolveExportFormat maps the --profile-format flag value to a visualizer.ExportFormat.
+// Unrecognized values default to FormatHTML with a warning.
+func resolveExportFormat(flag string) visualizer.ExportFormat {
+	switch flag {
+	case "html":
+		return visualizer.FormatHTML
+	case "svg":
+		return visualizer.FormatSVG
+	default:
+		fmt.Fprintf(os.Stderr, "warning: unrecognized --profile-format %q, defaulting to html\n", flag)
+		return visualizer.FormatHTML
+	}
+}
+
+// exportFlamegraphIfNeeded writes a flamegraph file when --profile is set and the
+// simulator returned SVG data. It is a no-op when profiling is disabled.
+func exportFlamegraphIfNeeded(txHash string, resp *simulator.SimulationResponse) error {
+	if !ProfileFlag {
+		return nil
+	}
+	if resp.Flamegraph == "" {
+		fmt.Fprintf(os.Stderr, "warning: profiling was requested but the simulator returned no flamegraph data\n")
+		return nil
+	}
+
+	format := resolveExportFormat(ProfileFormatFlag)
+	content := visualizer.ExportFlamegraph(resp.Flamegraph, format)
+	filename := txHash + format.GetFileExtension()
+
+	if err := os.WriteFile(filename, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write flamegraph to %s: %w", filename, err)
+	}
+	fmt.Printf("Flamegraph written to %s\n", filename)
+	return nil
 }
 
 func init() {
